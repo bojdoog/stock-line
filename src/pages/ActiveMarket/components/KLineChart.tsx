@@ -146,7 +146,6 @@ const KLineChart: React.FC<KLineChartProps> = ({
         : extraSeries);
 
     const dates = filteredData.map(item => item.date);
-    const dateSet = new Set(dates);
 
     // 如果有保存的 zoom 范围，应用它；否则使用默认初始范围
     const initialStart = zoomRange.current?.start ?? 90;

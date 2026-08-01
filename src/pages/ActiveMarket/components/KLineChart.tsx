@@ -9,9 +9,6 @@ interface KLineData {
   close: number;
   volume: number;
   amount: number;
-  涨幅?: string;
-  振幅?: string;
-  区间?: string;
 }
 
 interface ExtraSeries {
@@ -538,6 +535,17 @@ const KLineChart: React.FC<KLineChartProps> = ({
               tooltipHtml += `
                 <div style="color:${zoneLabelColor};padding-left:10px;font-size:11px;">↳ ${zoneLabel}: <span style="color:${totalChangeColor}">${totalChange}%</span></div>
               `;
+
+              // 区间总涨幅（从区间起点到区间终点）
+              const zoneEndItem = filteredData[currentZone.end];
+              if (zoneEndItem && !isNaN(zoneEndItem.close)) {
+                const zoneTotalChange = ((zoneEndItem.close - startItem.close) / startItem.close * 100).toFixed(2);
+                const zoneTotalChangeColor = parseFloat(zoneTotalChange) >= 0 ? '#ff4d4d' : '#00b300';
+                const zoneTotalLabel = currentBullZone ? '多头区间总涨幅' : '空头区间总涨幅';
+                tooltipHtml += `
+                  <div style="color:${zoneLabelColor};padding-left:10px;font-size:11px;">↳ ${zoneTotalLabel}: <span style="color:${zoneTotalChangeColor}">${zoneTotalChange}%</span></div>
+                `;
+              }
             }
           }
 

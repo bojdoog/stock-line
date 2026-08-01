@@ -1,6 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { Select } from 'antd';
+import { Select, Modal, Collapse, Tooltip } from 'antd';
+import { DeleteTwoTone } from '@ant-design/icons';
 import KLineChart from './components/KLineChart';
+import BacktestChart from './components/BacktestChart';
+import { runBacktest, BacktestResult, BacktestTrade, StrategyParams, DEFAULT_STRATEGY_PARAMS, calculateOptimalWeights, OptimalMethod, MoneyflowData, RankingMethod } from './utils/backtest';
 
 interface KLineData {
     date: string;
@@ -10,9 +13,6 @@ interface KLineData {
     close: number;
     volume: number;
     amount: number;
-    涨幅?: string;
-    振幅?: string;
-    区间?: string;
 }
 
 interface ExtraSeries {
@@ -38,9 +38,11 @@ const ETF_OPTIONS = [
     { value: '512690', label: '白酒ETF', file: 'etf/512690_白酒ETF.csv' },
     { value: '512880', label: '证券ETF', file: 'etf/512880_证券ETF.csv' },
     { value: '512800', label: '银行ETF', file: 'etf/512800_银行ETF.csv' },
-    { value: '159530', label: '机器人ETF', file: 'etf/159530_机器人ETF.csv' },
+    { value: '562500', label: '机器人ETF', file: 'etf/562500_机器人ETF.csv' },
     { value: '510660', label: '创新药ETF', file: 'etf/510660_创新药ETF.csv' },
     { value: '159869', label: '游戏ETF', file: 'etf/159869_游戏ETF.csv' },
+    { value: '515230', label: '软件ETF', file: 'etf/515230_软件ETF.csv' },
+    { value: '512980', label: '传媒ETF', file: 'etf/512980_传媒ETF.csv' },
     { value: '516290', label: '光伏ETF', file: 'etf/516290_光伏ETF.csv' },
     { value: '561380', label: '电网设备ETF', file: 'etf/561380_电网设备ETF.csv' },
     { value: '159206', label: '卫星ETF', file: 'etf/159206_卫星ETF.csv' },
@@ -61,6 +63,14 @@ const ActiveMarket: React.FC = () => {
     const [allETFSeries, setAllETFSeries] = useState<ExtraSeries[]>([]);
     const [upperETFId, setUpperETFId] = useState<string | undefined>(undefined);
     const [chartZones, setChartZones] = useState<{ bull: { start: number; end: number }[]; bear: { start: number; end: number }[] } | undefined>(undefined);
+    const [backtestResult, setBacktestResult] = useState<BacktestResult | null>(null);
+    const [showBacktestModal, setShowBacktestModal] = useState(false);
+    const [selectedYear, setSelectedYear] = useState<number | null>(null);
+    const [strategyParams, setStrategyParams] = useState<StrategyParams>(DEFAULT_STRATEGY_PARAMS);
+    const [activePreset, setActivePreset] = useState<string>('default');
+    const [showStrategyCard, setShowStrategyCard] = useState(false);
+    const [moneyflowData, setMoneyflowData] = useState<MoneyflowData[]>([]);
+    const [conceptMoneyflowData, setConceptMoneyflowData] = useState<MoneyflowData[]>([]);
 
     // 当前页面全屏展示图表，去除 body 默认 margin/padding 避免滚动条
     useEffect(() => {
@@ -75,7 +85,7 @@ const ActiveMarket: React.FC = () => {
     }, []);
 
     useEffect(() => {
-        fetch('/0AMV-2013-2026.csv')
+        fetch('/data/0AMV-2013-2026.csv')
             .then(res => res.text())
             .then(text => {
                 const lines = text.trim().split('\n');
@@ -88,10 +98,7 @@ const ActiveMarket: React.FC = () => {
                         low: parseFloat(values[3]),
                         close: parseFloat(values[4]),
                         volume: parseFloat(values[5]),
-                        amount: parseFloat(values[6]),
-                        涨幅: values[7],
-                        振幅: values[8],
-                        区间: values[9]
+                        amount: parseFloat(values[6])
                     };
                 }).filter(item => !isNaN(item.open) && !isNaN(item.close));
 
@@ -135,6 +142,75 @@ const ActiveMarket: React.FC = () => {
     useEffect(() => {
         setExtraSeries(allETFSeries.filter(s => selectedETFs.includes(s.id)));
     }, [selectedETFs, allETFSeries]);
+
+    // 加载资金流向数据（东财行业 + 同花顺概念）
+    const parseMoneyflowCSV = (text: string): MoneyflowData[] => {
+        const lines = text.trim().split('\n');
+        const headers = lines[0].split(',').map(h => h.trim().replace(/\r/g, ''));
+        return lines.slice(1).map(line => {
+            const values = line.split(',');
+            const row: Record<string, string> = {};
+            headers.forEach((h, i) => {
+                row[h.trim()] = values[i]?.trim() || '';
+            });
+            return {
+                date: row['date'] || '',
+                industry_name: row['industry_name'] || '',
+                pct_change: parseFloat(row['pct_change']) || 0,
+                close: parseFloat(row['close_price']) || parseFloat(row['close']) || 0,
+                net_inflow: parseFloat(row['net_inflow']) || 0,
+                net_amount_rate: parseFloat(row['net_amount_rate']) || 0,
+                super_large_inflow: parseFloat(row['super_large_inflow']) || 0,
+                large_inflow: parseFloat(row['large_inflow']) || 0,
+                rank: parseInt(row['rank']) || 0,
+                etf_code: row['etf_code'] || '',
+                etf_name: row['etf_name'] || '',
+            } as MoneyflowData;
+        });
+    };
+
+    const loadMoneyflowDir = async (dir: string): Promise<MoneyflowData[]> => {
+        const response = await fetch(`/data/${dir}/index.json`);
+        if (!response.ok) return [];
+        const fileList: string[] = await response.json();
+
+        const allData: MoneyflowData[] = [];
+        for (const file of fileList) {
+            try {
+                const res = await fetch(`/data/${dir}/${file}`);
+                if (!res.ok) continue;
+                const text = await res.text();
+                allData.push(...parseMoneyflowCSV(text));
+            } catch (e) {
+                // 忽略单个文件加载错误
+            }
+        }
+        return allData;
+    };
+
+    useEffect(() => {
+        const loadAll = async () => {
+            try {
+                const [dcData, thsData] = await Promise.all([
+                    loadMoneyflowDir('moneyflow_dc'),
+                    loadMoneyflowDir('moneyflow_ths'),
+                ]);
+                setMoneyflowData(dcData);
+                setConceptMoneyflowData(thsData);
+            } catch (e) {
+                console.error('加载资金流向数据失败:', e);
+            }
+        };
+        loadAll();
+    }, []);
+
+    // 数据加载完成后运行多空区间策略回测
+    useEffect(() => {
+        if (data.length > 0 && allETFSeries.length > 0) {
+            const result = runBacktest(data, allETFSeries, strategyParams, moneyflowData, conceptMoneyflowData);
+            setBacktestResult(result);
+        }
+    }, [data, allETFSeries, strategyParams, moneyflowData, conceptMoneyflowData]);
 
     if (loading) {
         return <div style={{ padding: 20, color: '#333' }}>加载中...</div>;
@@ -190,6 +266,340 @@ const ActiveMarket: React.FC = () => {
                     size="middle"
                 />
             </div>
+            <Collapse style={{ marginBottom: 12, flexShrink: 0, backgroundColor: '#fff' }}>
+                <Collapse.Panel header="策略设置" key="strategy">
+                    <div style={{ marginBottom: 12, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                        <span style={{ color: '#333', fontSize: 14, fontWeight: 500 }}>策略预设：</span>
+                        {[
+                            { key: 'default', label: '默认策略' },
+                            { key: 'conservative', label: '稳健策略' },
+                            { key: 'aggressive', label: '激进策略' },
+                        ].map(preset => (
+                            <button
+                                key={preset.key}
+                                onClick={() => {
+                                    setActivePreset(preset.key);
+                                    if (preset.key === 'default') {
+                                        setStrategyParams(DEFAULT_STRATEGY_PARAMS);
+                                    } else if (preset.key === 'conservative') {
+                                        setStrategyParams({
+                                            ...DEFAULT_STRATEGY_PARAMS,
+                                            bullStartSingleDay: 5,
+                                            bullStartTwoDay: 5,
+                                            bullEndSingleDay: -1.5,
+                                        });
+                                    } else if (preset.key === 'aggressive') {
+                                        setStrategyParams({
+                                            ...DEFAULT_STRATEGY_PARAMS,
+                                            bullStartSingleDay: 3,
+                                            bullStartTwoDay: 3,
+                                            bullEndSingleDay: -3,
+                                        });
+                                    }
+                                }}
+                                style={{
+                                    padding: '4px 12px',
+                                    fontSize: 13,
+                                    border: activePreset === preset.key ? '1px solid #1890ff' : '1px solid #d9d9d9',
+                                    backgroundColor: activePreset === preset.key ? '#e6f7ff' : '#fff',
+                                    color: activePreset === preset.key ? '#1890ff' : '#666',
+                                    borderRadius: 4,
+                                    cursor: 'pointer',
+                                }}
+                            >
+                                {preset.label}
+                            </button>
+                        ))}
+                        <span style={{ color: '#e8e8e8', margin: '0 4px' }}>|</span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#666' }}>
+                            回测区间
+                            <Select
+                                value={strategyParams.startYear}
+                                onChange={val => {
+                                    setActivePreset('custom');
+                                    setStrategyParams(p => ({
+                                        ...p,
+                                        startYear: Math.min(val, p.endYear),
+                                    }));
+                                }}
+                                options={Array.from({ length: (new Date().getFullYear() - 2013 + 1) }, (_, i) => ({
+                                    value: 2013 + i,
+                                    label: `${2013 + i}年`,
+                                }))}
+                                style={{ width: 90 }}
+                                size="small"
+                            />
+                            <span style={{ color: '#999' }}>~</span>
+                            <Select
+                                value={strategyParams.endYear}
+                                onChange={val => {
+                                    setActivePreset('custom');
+                                    setStrategyParams(p => ({
+                                        ...p,
+                                        endYear: Math.max(val, p.startYear),
+                                    }));
+                                }}
+                                options={Array.from({ length: (new Date().getFullYear() - 2013 + 1) }, (_, i) => ({
+                                    value: 2013 + i,
+                                    label: `${2013 + i}年`,
+                                }))}
+                                style={{ width: 90 }}
+                                size="small"
+                                getPopupContainer={trigger => trigger.parentElement as HTMLElement}
+                            />
+                            <span style={{ color: '#e8e8e8', margin: '0 4px' }}>|</span>
+                            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#666' }}>
+                                买入排名方式：
+                                <Select
+                                    value={strategyParams.rankingMethod}
+                                    onChange={val => {
+                                        setActivePreset('custom');
+                                        setStrategyParams(p => ({ ...p, rankingMethod: val as RankingMethod }));
+                                    }}
+                                    options={[
+                                        { value: 'etf_gain', label: 'ETF涨幅排名' },
+                                        { value: 'moneyflow', label: '板块流入量排名' },
+                                        { value: 'concept_moneyflow', label: '概念流入排名' },
+                                    ]}
+                                    style={{ width: 140 }}
+                                    size="small"
+                                />
+                            </label>
+                        </div>
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px 24px', marginBottom: 12 }}>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#666' }}>
+                            当日涨幅大于
+                            <input
+                                type="number"
+                                step={0.1}
+                                value={strategyParams.bullStartSingleDay}
+                                onChange={e => {
+                                    setActivePreset('custom');
+                                    setStrategyParams(p => ({ ...p, bullStartSingleDay: parseFloat(e.target.value) || 0 }));
+                                }}
+                                style={{ width: 60, padding: '4px 8px', border: '1px solid #d9d9d9', borderRadius: 4 }}
+                            />
+                            %
+                        </label>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#666' }}>
+                            两日累计涨幅大于
+                            <input
+                                type="number"
+                                step={0.1}
+                                value={strategyParams.bullStartTwoDay}
+                                onChange={e => {
+                                    setActivePreset('custom');
+                                    setStrategyParams(p => ({ ...p, bullStartTwoDay: parseFloat(e.target.value) || 0 }));
+                                }}
+                                style={{ width: 60, padding: '4px 8px', border: '1px solid #d9d9d9', borderRadius: 4 }}
+                            />
+                            %
+                        </label>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#666' }}>
+                            单日跌幅小于
+                            <input
+                                type="number"
+                                step={0.1}
+                                value={strategyParams.bullEndSingleDay}
+                                onChange={e => {
+                                    setActivePreset('custom');
+                                    setStrategyParams(p => ({ ...p, bullEndSingleDay: parseFloat(e.target.value) || 0 }));
+                                }}
+                                style={{ width: 60, padding: '4px 8px', border: '1px solid #d9d9d9', borderRadius: 4 }}
+                            />
+                            % 结束多头
+                        </label>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#666', cursor: 'pointer' }}>
+                            <input
+                                type="checkbox"
+                                checked={strategyParams.bullEndUseMA10}
+                                onChange={e => {
+                                    setActivePreset('custom');
+                                    setStrategyParams(p => ({ ...p, bullEndUseMA10: e.target.checked }));
+                                }}
+                                style={{ width: 14, height: 14 }}
+                            />
+                            收盘价跌破 MA10 也结束多头
+                        </label>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#666' }}>
+                            空头买银行起始年：
+                            <input
+                                type="number"
+                                value={strategyParams.bearStartYear}
+                                onChange={e => {
+                                    setActivePreset('custom');
+                                    setStrategyParams(p => ({ ...p, bearStartYear: parseInt(e.target.value, 10) || 0 }));
+                                }}
+                                style={{ width: 70, padding: '4px 8px', border: '1px solid #d9d9d9', borderRadius: 4 }}
+                            />
+                        </label>
+                    </div>
+
+                    <div style={{ marginBottom: 12 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 8 }}>
+                            <span style={{ fontSize: 13, color: '#666' }}>多头区间买入比例（前 N ETF）：</span>
+                            <button
+                                onClick={() => {
+                                    setActivePreset('custom');
+                                    setStrategyParams(p => ({ ...p, weights: [...p.weights, 0] }));
+                                }}
+                                style={{
+                                    padding: '4px 10px',
+                                    fontSize: 13,
+                                    color: '#1890ff',
+                                    backgroundColor: '#fff',
+                                    border: '1px solid #1890ff',
+                                    borderRadius: 4,
+                                    cursor: 'pointer',
+                                }}
+                            >
+                                + 添加排名
+                            </button>
+                            <button
+                                onClick={() => {
+                                    setActivePreset('default');
+                                    setStrategyParams(p => ({ ...p, weights: [...DEFAULT_STRATEGY_PARAMS.weights] }));
+                                }}
+                                style={{
+                                    padding: '4px 10px',
+                                    fontSize: 13,
+                                    color: '#666',
+                                    backgroundColor: '#fff',
+                                    border: '1px solid #d9d9d9',
+                                    borderRadius: 4,
+                                    cursor: 'pointer',
+                                }}
+                            >
+                                恢复默认
+                            </button>
+                            <span style={{ color: '#e8e8e8', margin: '0 4px' }}>|</span>
+                            {([
+                                { key: 'equal', label: '等权', tip: '前 5 名 ETF 各买入 20%，不考虑历史表现差异。' },
+                                { key: 'return', label: '收益加权', tip: '按历史各名次（第1~5名）的平均区间收益比例分配仓位，收益高的名次配更多。' },
+                                { key: 'growth', label: '增长最优', tip: '网格搜索所有权重组合，找出使历史多头区间累计净值乘积最大的分配方案。' },
+                                { key: 'sharpe', label: '夏普最优', tip: '网格搜索所有权重组合，找出使历史多头区间收益均值/波动（夏普）最大的分配方案。' },
+                            ] as { key: OptimalMethod; label: string; tip: string }[]).map((item) => (
+                                <Tooltip key={item.key} title={item.tip} placement="top">
+                                    <button
+                                        onClick={() => {
+                                            if (!backtestResult) return;
+                                            setActivePreset('custom');
+                                            const optimal = calculateOptimalWeights(backtestResult, item.key);
+                                            setStrategyParams(p => ({ ...p, weights: optimal }));
+                                        }}
+                                        disabled={!backtestResult}
+                                        style={{
+                                            padding: '2px 8px',
+                                            fontSize: 12,
+                                            color: backtestResult ? '#1890ff' : '#bbb',
+                                            backgroundColor: '#fff',
+                                            border: '1px solid #1890ff',
+                                            borderRadius: 4,
+                                            cursor: backtestResult ? 'pointer' : 'not-allowed',
+                                            lineHeight: '20px',
+                                        }}
+                                    >
+                                        {item.label}
+                                    </button>
+                                </Tooltip>
+                            ))}
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 24, flexWrap: 'wrap' }}>
+                            {strategyParams.weights.map((w, idx) => {
+                                const otherTotal = strategyParams.weights.reduce((a, b, i) => a + (i === idx ? 0 : b), 0);
+                                const maxVal = Math.max(0, 100 - otherTotal);
+                                return (
+                                    <label key={idx} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#666' }}>
+                                        第{idx + 1}名
+                                        <input
+                                            type="number"
+                                            step={1}
+                                            min={0}
+                                            max={maxVal}
+                                            value={w}
+                                            onChange={e => {
+                                                setActivePreset('custom');
+                                                const raw = parseFloat(e.target.value) || 0;
+                                                const val = Math.min(Math.max(raw, 0), maxVal);
+                                                const newWeights = [...strategyParams.weights];
+                                                newWeights[idx] = val;
+                                                setStrategyParams(p => ({ ...p, weights: newWeights }));
+                                            }}
+                                            style={{ width: 60, padding: '4px 8px', border: '1px solid #d9d9d9', borderRadius: 4 }}
+                                        />
+                                        %
+                                        {strategyParams.weights.length > 1 && (
+                                            <span
+                                                onClick={() => {
+                                                    setActivePreset('custom');
+                                                    const newWeights = strategyParams.weights.filter((_, i) => i !== idx);
+                                                    setStrategyParams(p => ({ ...p, weights: newWeights }));
+                                                }}
+                                                style={{
+                                                    marginLeft: 4,
+                                                    cursor: 'pointer',
+                                                    display: 'inline-flex',
+                                                    alignItems: 'center',
+                                                }}
+                                                title="删除"
+                                            >
+                                                <DeleteTwoTone twoToneColor="#ff4d4f" />
+                                            </span>
+                                        )}
+                                    </label>
+                                );
+                            })}
+                            <span style={{
+                                fontSize: 13,
+                                color: strategyParams.weights.reduce((a, b) => a + b, 0) > 100 ? '#ff4d4f' : '#999',
+                                fontWeight: strategyParams.weights.reduce((a, b) => a + b, 0) > 100 ? 500 : 'normal',
+                            }}>
+                                合计：{strategyParams.weights.reduce((a, b) => a + b, 0).toFixed(0)}%
+                            </span>
+                        </div>
+                    </div>
+
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
+                        <button
+                            onClick={() => setShowBacktestModal(true)}
+                            style={{
+                                padding: '6px 16px',
+                                fontSize: 14,
+                                color: '#fff',
+                                backgroundColor: '#1890ff',
+                                border: 'none',
+                                borderRadius: 4,
+                                cursor: 'pointer',
+                            }}
+                        >
+                            查看回测结果
+                        </button>
+                        {backtestResult && (
+                            <>
+                                <span style={{ fontSize: 14, color: backtestResult.totalReturn >= 0 ? '#c41e3a' : '#006400', fontWeight: 500 }}>
+                                    总收益率：{backtestResult.totalReturn >= 0 ? '+' : ''}{(backtestResult.totalReturn * 100).toFixed(2)}%
+                                </span>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                                    {backtestResult.yearResults.map(r => (
+                                        <div key={r.year} style={{ textAlign: 'center', minWidth: 48 }}>
+                                            <div style={{ fontSize: 11, color: '#999' }}>{r.year}</div>
+                                            <div style={{
+                                                fontSize: 12,
+                                                color: r.annual_return >= 0 ? '#c41e3a' : '#006400',
+                                                fontWeight: 500,
+                                            }}>
+                                                {r.annual_return >= 0 ? '+' : ''}{r.annual_return.toFixed(2)}%
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </>
+                        )}
+                    </div>
+                </Collapse.Panel>
+            </Collapse>
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, gap: upperETFId ? 12 : 0 }}>
                 {upperETFId && (
                     <div style={{ flex: '0 0 30%', minHeight: 220, display: 'flex', flexDirection: 'column', border: '1px solid #ddd', borderRadius: 4, padding: '8px 0', backgroundColor: '#fff' }}>
@@ -232,7 +642,89 @@ const ActiveMarket: React.FC = () => {
                     />
                 </div>
             </div>
-        </div>
+
+            <Modal
+                title="多空区间策略回测（2019 年起）"
+                open={showBacktestModal}
+                onCancel={() => setShowBacktestModal(false)}
+                footer={null}
+                width={760}
+                bodyStyle={{ padding: '28px 36px' }}
+            >
+                {backtestResult && (
+                    <>
+                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 15 }}>
+                            <thead>
+                                <tr style={{ backgroundColor: '#f5f5f5' }}>
+                                    <th style={{ padding: '14px 18px', textAlign: 'left', borderBottom: '1px solid #ddd' }}>年份</th>
+                                    <th style={{ padding: '14px 18px', textAlign: 'right', borderBottom: '1px solid #ddd' }}>年初净值</th>
+                                    <th style={{ padding: '14px 18px', textAlign: 'right', borderBottom: '1px solid #ddd' }}>年末净值</th>
+                                    <th style={{ padding: '14px 18px', textAlign: 'right', borderBottom: '1px solid #ddd' }}>年收益率</th>
+                                    <th style={{ padding: '14px 18px', textAlign: 'left', borderBottom: '1px solid #ddd' }}>操作</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {backtestResult.yearResults.map(r => (
+                                    <tr key={r.year}>
+                                        <td style={{ padding: '14px 18px', borderBottom: '1px solid #eee' }}>{r.year}</td>
+                                        <td style={{ padding: '14px 18px', textAlign: 'right', borderBottom: '1px solid #eee' }}>{r.start_nav.toFixed(4)}</td>
+                                        <td style={{ padding: '14px 18px', textAlign: 'right', borderBottom: '1px solid #eee' }}>{r.end_nav.toFixed(4)}</td>
+                                        <td style={{ padding: '14px 18px', textAlign: 'right', borderBottom: '1px solid #eee', color: r.annual_return >= 0 ? '#c41e3a' : '#006400', fontWeight: 500 }}>
+                                            {r.annual_return >= 0 ? '+' : ''}{r.annual_return.toFixed(2)}%
+                                        </td>
+                                        <td style={{ padding: '14px 18px', borderBottom: '1px solid #eee' }}>
+                                            <a
+                                                onClick={() => { setSelectedYear(r.year); }}
+                                                style={{ color: '#1890ff', cursor: 'pointer' }}
+                                            >
+                                                查看交易明细
+                                            </a>
+                                        </td>
+                                    </tr>
+                                ))}
+                                <tr style={{ fontWeight: 'bold', backgroundColor: '#fafafa' }}>
+                                    <td style={{ padding: '14px 18px' }}>累计</td>
+                                    <td style={{ padding: '14px 18px', textAlign: 'right' }}>1.0000</td>
+                                    <td style={{ padding: '14px 18px', textAlign: 'right' }}>{backtestResult.finalNav.toFixed(4)}</td>
+                                    <td style={{ padding: '14px 18px', textAlign: 'right', color: backtestResult.totalReturn >= 0 ? '#c41e3a' : '#006400' }}>
+                                        {backtestResult.totalReturn >= 0 ? '+' : ''}{(backtestResult.totalReturn * 100).toFixed(2)}%
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                        <div style={{ marginTop: 16, fontSize: 13, color: '#999', lineHeight: 1.8 }}>
+                            规则：多头区间启动日买入涨幅前{strategyParams.weights.length} ETF（{strategyParams.weights.map(w => `${w.toFixed(0)}%`).join('/')}），区间结束卖出；单日涨幅&gt;{strategyParams.bullStartSingleDay}%或两日累计&gt;{strategyParams.bullStartTwoDay}%启动多头；单日跌幅&lt;{strategyParams.bullEndSingleDay}%{strategyParams.bullEndUseMA10 ? '或跌破MA10' : ''}结束多头；{strategyParams.bearStartYear}年起空头区间持有银行 ETF；跨年收益计入开始年份。点击年份可查看当年每个波段的交易明细。
+                        </div>
+                    </>
+                )}
+            </Modal>
+
+            <Modal
+                title={(() => {
+                    const yearResult = backtestResult?.yearResults.find(y => y.year === selectedYear);
+                    if (!yearResult) return `${selectedYear}年 收益率曲线`;
+                    const color = yearResult.annual_return >= 0 ? '#c41e3a' : '#006400';
+                    return (
+                        <span>
+                            {selectedYear}年 收益率曲线
+                            <span style={{ marginLeft: 16, fontSize: 15, color, fontWeight: 500 }}>
+                                总收益：{yearResult.annual_return >= 0 ? '+' : ''}{yearResult.annual_return.toFixed(2)}%
+                            </span>
+                        </span>
+                    );
+                })()}
+                open={selectedYear !== null}
+                onCancel={() => setSelectedYear(null)}
+                footer={null}
+                width="90%"
+                style={{ top: '5%' }}
+                bodyStyle={{ padding: '20px 28px', height: 'calc(90vh - 110px)', overflow: 'auto' }}
+            >
+                {selectedYear !== null && backtestResult && (
+                    <BacktestChart result={backtestResult} year={selectedYear} amvData={data} rankingMethod={strategyParams.rankingMethod} />
+                )}
+            </Modal>
+        </div >
     );
 };
 

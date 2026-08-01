@@ -140,10 +140,10 @@ def _filter_by_boards_stocklist(df: pd.DataFrame, exclude_boards: set[str]) -> p
     ts_code = df["ts_code"].astype(str).str.upper()
     mask = pd.Series(True, index=df.index)
 
-    if "gem" in exclude_boards:
-        mask &= ~code.str.startswith(("300", "301"))
-    if "star" in exclude_boards:
-        mask &= ~code.str.startswith(("688",))
+    # if "gem" in exclude_boards:
+    #     mask &= ~code.str.startswith(("300", "301"))
+    # if "star" in exclude_boards:
+    #     mask &= ~code.str.startswith(("688",))
     if "bj" in exclude_boards:
         mask &= ~(ts_code.str.endswith(".BJ") | code.str.startswith(("4", "8")))
 

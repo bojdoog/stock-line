@@ -332,25 +332,27 @@ const BacktestChart: React.FC<BacktestChartProps> = ({ result, year, amvData = [
                           marginLeft: -4,
                         }}
                       >
-                        {(rankingMethod === 'moneyflow' || rankingMethod === 'concept_moneyflow') && h.industry_name
+                        {(rankingMethod === 'ths_moneyflow' || rankingMethod === 'ths_concept' || rankingMethod === 'dc_moneyflow') && h.industry_name
                           ? h.industry_name
                           : h.name.replace('ETF', '')}
                         <span style={{ color: '#999' }}> {(h.weight * 100).toFixed(0)}%</span>
                         {h.day_change !== undefined && (
                           <>
                             <span style={{ color: '#999', marginLeft: 8 }}>
-                              {rankingMethod === 'moneyflow'
-                                ? '资金流入'
-                                : rankingMethod === 'concept_moneyflow'
-                                  ? '概念流入'
-                                  : '启动涨幅'}
+                              {rankingMethod === 'ths_moneyflow'
+                                ? '同花顺板块流入'
+                                : rankingMethod === 'ths_concept'
+                                  ? '同花顺概念流入'
+                                  : rankingMethod === 'dc_moneyflow'
+                                    ? '东财板块流入'
+                                    : '启动涨幅'}
                             </span>
                             <span style={{ color: h.day_change >= 0 ? '#c41e3a' : '#006400' }}>
-                              {rankingMethod === 'moneyflow' || rankingMethod === 'concept_moneyflow'
+                              {rankingMethod === 'ths_moneyflow' || rankingMethod === 'ths_concept' || rankingMethod === 'dc_moneyflow'
                                 ? (h.day_change >= 0 ? '+' : '') + h.day_change.toFixed(2) + '亿'
                                 : (h.day_change >= 0 ? '+' : '') + h.day_change.toFixed(2) + '%'}
                             </span>
-                            {(rankingMethod === 'moneyflow' || rankingMethod === 'concept_moneyflow') && (
+                            {(rankingMethod === 'ths_moneyflow' || rankingMethod === 'ths_concept' || rankingMethod === 'dc_moneyflow') && (
                               <span style={{ color: '#666', marginLeft: 8 }}>{h.name.replace('ETF', '')}</span>
                             )}
                           </>

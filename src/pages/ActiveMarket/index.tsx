@@ -3,7 +3,7 @@ import { Select, Modal, Collapse, Tooltip } from 'antd';
 import { DeleteTwoTone } from '@ant-design/icons';
 import KLineChart from './components/KLineChart';
 import BacktestChart from './components/BacktestChart';
-import { runBacktest, BacktestResult, BacktestTrade, StrategyParams, DEFAULT_STRATEGY_PARAMS, calculateOptimalWeights, OptimalMethod, MoneyflowData, RankingMethod } from './utils/backtest';
+import { runBacktest, BacktestResult, BacktestTrade, StrategyParams, DEFAULT_STRATEGY_PARAMS, calculateOptimalWeights, OptimalMethod, MoneyflowData, RankingMethod, BenchmarkReturn } from './utils/backtest';
 
 interface KLineData {
     date: string;
@@ -71,6 +71,7 @@ const ActiveMarket: React.FC = () => {
     const [showStrategyCard, setShowStrategyCard] = useState(false);
     const [moneyflowData, setMoneyflowData] = useState<MoneyflowData[]>([]);
     const [conceptMoneyflowData, setConceptMoneyflowData] = useState<MoneyflowData[]>([]);
+    const [indMoneyflowData, setIndMoneyflowData] = useState<MoneyflowData[]>([]);
 
     // 当前页面全屏展示图表，去除 body 默认 margin/padding 避免滚动条
     useEffect(() => {
@@ -191,12 +192,14 @@ const ActiveMarket: React.FC = () => {
     useEffect(() => {
         const loadAll = async () => {
             try {
-                const [dcData, thsData] = await Promise.all([
-                    loadMoneyflowDir('moneyflow_dc'),
-                    loadMoneyflowDir('moneyflow_ths'),
+                const [dcData, thsData, indThsData] = await Promise.all([
+                    loadMoneyflowDir('moneyflow_ind_dc'),
+                    loadMoneyflowDir('moneyflow_cnt_ths'),
+                    loadMoneyflowDir('moneyflow_ind_ths'),
                 ]);
                 setMoneyflowData(dcData);
                 setConceptMoneyflowData(thsData);
+                setIndMoneyflowData(indThsData);
             } catch (e) {
                 console.error('加载资金流向数据失败:', e);
             }
@@ -207,10 +210,10 @@ const ActiveMarket: React.FC = () => {
     // 数据加载完成后运行多空区间策略回测
     useEffect(() => {
         if (data.length > 0 && allETFSeries.length > 0) {
-            const result = runBacktest(data, allETFSeries, strategyParams, moneyflowData, conceptMoneyflowData);
+            const result = runBacktest(data, allETFSeries, strategyParams, moneyflowData, conceptMoneyflowData, indMoneyflowData);
             setBacktestResult(result);
         }
-    }, [data, allETFSeries, strategyParams, moneyflowData, conceptMoneyflowData]);
+    }, [data, allETFSeries, strategyParams, moneyflowData, conceptMoneyflowData, indMoneyflowData]);
 
     if (loading) {
         return <div style={{ padding: 20, color: '#333' }}>加载中...</div>;
@@ -357,9 +360,10 @@ const ActiveMarket: React.FC = () => {
                                         setStrategyParams(p => ({ ...p, rankingMethod: val as RankingMethod }));
                                     }}
                                     options={[
-                                        { value: 'etf_gain', label: 'ETF涨幅排名' },
-                                        { value: 'moneyflow', label: '板块流入量排名' },
-                                        { value: 'concept_moneyflow', label: '概念流入排名' },
+                                        { value: 'etf_gain', label: 'ETF涨幅' },
+                                        { value: 'dc_moneyflow', label: '东财板块流入' },
+                                        { value: 'ths_moneyflow', label: '同花顺板块流入' },
+                                        { value: 'ths_concept', label: '同花顺概念流入' },
                                     ]}
                                     style={{ width: 140 }}
                                     size="small"
@@ -595,6 +599,14 @@ const ActiveMarket: React.FC = () => {
                                         </div>
                                     ))}
                                 </div>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', fontSize: 13, color: '#666', marginTop: 4 }}>
+                                    <span style={{ fontWeight: 500 }}>总基准对比：</span>
+                                    {backtestResult.benchmarkReturns.map(b => (
+                                        <span key={b.name} style={{ color: b.totalReturn >= 0 ? '#c41e3a' : '#006400' }}>
+                                            {b.name}：{b.totalReturn >= 0 ? '+' : ''}{(b.totalReturn * 100).toFixed(2)}%
+                                        </span>
+                                    ))}
+                                </div>
                             </>
                         )}
                     </div>
@@ -644,11 +656,11 @@ const ActiveMarket: React.FC = () => {
             </div>
 
             <Modal
-                title="多空区间策略回测（2019 年起）"
+                title="多空区间策略回测"
                 open={showBacktestModal}
                 onCancel={() => setShowBacktestModal(false)}
                 footer={null}
-                width={760}
+                width={800}
                 bodyStyle={{ padding: '28px 36px' }}
             >
                 {backtestResult && (
@@ -692,6 +704,14 @@ const ActiveMarket: React.FC = () => {
                                 </tr>
                             </tbody>
                         </table>
+                        <div style={{ marginTop: 16, display: 'flex', gap: 24, flexWrap: 'wrap', fontSize: 14 }}>
+                            <div style={{ fontWeight: 500, color: '#666' }}>总基准对比（多头区间持有）：</div>
+                            {backtestResult.benchmarkReturns.map(b => (
+                                <div key={b.name} style={{ color: b.totalReturn >= 0 ? '#c41e3a' : '#006400' }}>
+                                    {b.name}：{b.totalReturn >= 0 ? '+' : ''}{(b.totalReturn * 100).toFixed(2)}%
+                                </div>
+                            ))}
+                        </div>
                         <div style={{ marginTop: 16, fontSize: 13, color: '#999', lineHeight: 1.8 }}>
                             规则：多头区间启动日买入涨幅前{strategyParams.weights.length} ETF（{strategyParams.weights.map(w => `${w.toFixed(0)}%`).join('/')}），区间结束卖出；单日涨幅&gt;{strategyParams.bullStartSingleDay}%或两日累计&gt;{strategyParams.bullStartTwoDay}%启动多头；单日跌幅&lt;{strategyParams.bullEndSingleDay}%{strategyParams.bullEndUseMA10 ? '或跌破MA10' : ''}结束多头；{strategyParams.bearStartYear}年起空头区间持有银行 ETF；跨年收益计入开始年份。点击年份可查看当年每个波段的交易明细。
                         </div>
@@ -708,8 +728,17 @@ const ActiveMarket: React.FC = () => {
                         <span>
                             {selectedYear}年 收益率曲线
                             <span style={{ marginLeft: 16, fontSize: 15, color, fontWeight: 500 }}>
-                                总收益：{yearResult.annual_return >= 0 ? '+' : ''}{yearResult.annual_return.toFixed(2)}%
+                                策略：{yearResult.annual_return >= 0 ? '+' : ''}{yearResult.annual_return.toFixed(2)}%
                             </span>
+                            {backtestResult?.benchmarkReturns.map(b => {
+                                const ba = b.annualReturns.find(a => a.year === selectedYear);
+                                if (!ba) return null;
+                                return (
+                                    <span key={b.name} style={{ marginLeft: 12, fontSize: 14, color: ba.return >= 0 ? '#c41e3a' : '#006400' }}>
+                                        {b.name}：{ba.return >= 0 ? '+' : ''}{ba.return.toFixed(2)}%
+                                    </span>
+                                );
+                            })}
                         </span>
                     );
                 })()}

@@ -36,6 +36,13 @@ export interface BacktestNavPoint {
   nav: number;
 }
 
+export interface BenchmarkReturn {
+  name: string;
+  etfCode: string;
+  totalReturn: number;
+  annualReturns: { year: number; return: number }[];
+}
+
 export interface BacktestResult {
   zones: BacktestZone[];
   trades: BacktestTrade[];
@@ -43,6 +50,7 @@ export interface BacktestResult {
   totalReturn: number;
   finalNav: number;
   navSeries: BacktestNavPoint[];
+  benchmarkReturns: BenchmarkReturn[];
 }
 
 export interface KLineData {
@@ -163,7 +171,11 @@ const ETF_TO_INDUSTRY: Record<string, string[]> = {
   科创半导体设备ETF: ['EDA概念', '光刻机', '中芯概念'],
 };
 
-export type RankingMethod = 'etf_gain' | 'moneyflow' | 'concept_moneyflow';
+export type RankingMethod =
+  | 'etf_gain'
+  | 'ths_moneyflow'
+  | 'ths_concept'
+  | 'dc_moneyflow';
 
 export interface StrategyParams {
   bullStartSingleDay: number;
@@ -175,7 +187,7 @@ export interface StrategyParams {
   bearStartYear: number;
   startYear: number;
   endYear: number;
-  /** 多头区间买入排名方式：etf_gain=ETF涨幅排名, moneyflow=板块流入量排名, concept_moneyflow=概念流入量排名 */
+  /** 多头区间买入排名方式：etf_gain=ETF涨幅排名, ths_moneyflow=同花顺板块流入, ths_concept=同花顺概念流入, dc_moneyflow=东财板块流入 */
   rankingMethod: RankingMethod;
 }
 
@@ -509,6 +521,7 @@ export function runBacktest(
   params: StrategyParams = DEFAULT_STRATEGY_PARAMS,
   moneyflowData?: MoneyflowData[],
   conceptMoneyflowData?: MoneyflowData[],
+  indMoneyflowData?: MoneyflowData[],
 ): BacktestResult {
   const { startYear, endYear, weights, bearStartYear, rankingMethod } = params;
 
@@ -550,6 +563,18 @@ export function runBacktest(
     });
   }
 
+  // 构建同花顺行业资金流向数据映射
+  const indMoneyflowMap = new Map<string, MoneyflowData[]>();
+  if (indMoneyflowData && indMoneyflowData.length > 0) {
+    indMoneyflowData.forEach((item) => {
+      const dateKey = item.date.replace(/-/g, '');
+      if (!indMoneyflowMap.has(dateKey)) {
+        indMoneyflowMap.set(dateKey, []);
+      }
+      indMoneyflowMap.get(dateKey)!.push(item);
+    });
+  }
+
   const trades: BacktestTrade[] = [];
 
   zones.forEach((zone) => {
@@ -562,8 +587,39 @@ export function runBacktest(
 
       let topN: { name: string; day_change: number }[] = [];
 
-      if (rankingMethod === 'moneyflow' && moneyflowMap.size > 0) {
-        // 使用板块流入量排名
+      if (rankingMethod === 'ths_moneyflow' && indMoneyflowMap.size > 0) {
+        // 使用同花顺行业流入量排名
+        const inflows: {
+          name: string;
+          day_change: number;
+          inflow: number;
+          industry_name: string;
+        }[] = [];
+        const dateKey = startDate.replace(/-/g, '');
+        etfMap.forEach((data, name) => {
+          if (name === BANK_ETF_NAME) return;
+          const result = getConceptInflow(name, dateKey, indMoneyflowMap);
+          if (result !== null) {
+            inflows.push({
+              name,
+              day_change: result.inflow,
+              inflow: result.inflow,
+              industry_name: result.industryName,
+            });
+          }
+        });
+
+        topN = inflows
+          .filter((g) => !isNaN(g.inflow))
+          .sort((a, b) => b.inflow - a.inflow)
+          .slice(0, weights.length)
+          .map(({ name, day_change, industry_name }) => ({
+            name,
+            day_change,
+            industry_name,
+          }));
+      } else if (rankingMethod === 'dc_moneyflow' && moneyflowMap.size > 0) {
+        // 使用东财板块流入量排名
         const inflows: {
           name: string;
           day_change: number;
@@ -595,7 +651,7 @@ export function runBacktest(
             industry_name,
           }));
       } else if (
-        rankingMethod === 'concept_moneyflow' &&
+        rankingMethod === 'ths_concept' &&
         conceptMoneyflowMap.size > 0
       ) {
         // 使用同花顺概念流入量排名
@@ -608,7 +664,6 @@ export function runBacktest(
         const dateKey = startDate.replace(/-/g, '');
         etfMap.forEach((data, name) => {
           if (name === BANK_ETF_NAME) return;
-          // 获取该ETF在多头启动日的概念资金流向（使用startDate查询）
           const result = getConceptInflow(name, dateKey, conceptMoneyflowMap);
           if (result !== null) {
             inflows.push({
@@ -846,6 +901,53 @@ export function runBacktest(
     navSeries.push({ date, nav: parseFloat(nav.toFixed(6)) });
   }
 
+  // 计算基准 ETF（上证50、沪深300、中证2000）在多头区间的买入持有收益
+  const bullZonesOnly = zones.filter((z) => z.type === 'bull');
+  const benchmarkETFs: { name: string; code: string }[] = [
+    { name: '上证50ETF', code: '510050' },
+    { name: '沪深300ETF', code: '510300' },
+    { name: '中证2000ETF', code: '563300' },
+  ];
+  const benchmarkReturns: BenchmarkReturn[] = benchmarkETFs.map((b) => {
+    const data = etfMap.get(b.name);
+    let totalReturn = 0;
+    let hasAnyTrade = false;
+    const yearReturns = new Map<number, number[]>();
+
+    bullZonesOnly.forEach((zone) => {
+      const startClose = data ? getClose(data, zone.start_date) : null;
+      const endClose = data ? getClose(data, zone.end_date) : null;
+      if (startClose !== null && endClose !== null && startClose !== 0) {
+        const r = endClose / startClose - 1;
+        totalReturn = (1 + totalReturn) * (1 + r) - 1;
+        hasAnyTrade = true;
+        const y = parseInt(zone.start_date.split('-')[0], 10);
+        if (!yearReturns.has(y)) yearReturns.set(y, []);
+        yearReturns.get(y)!.push(r);
+      }
+    });
+
+    const annualReturns: { year: number; return: number }[] = [];
+    if (hasAnyTrade) {
+      const sortedYears = [...yearReturns.keys()].sort();
+      sortedYears.forEach((y) => {
+        const returns = yearReturns.get(y)!;
+        const annual = returns.reduce((a, b) => (1 + a) * (1 + b) - 1, 0);
+        annualReturns.push({
+          year: y,
+          return: parseFloat((annual * 100).toFixed(2)),
+        });
+      });
+    }
+
+    return {
+      name: b.name,
+      etfCode: b.code,
+      totalReturn: parseFloat(totalReturn.toFixed(4)),
+      annualReturns,
+    };
+  });
+
   return {
     zones,
     trades,
@@ -853,5 +955,6 @@ export function runBacktest(
     totalReturn,
     finalNav,
     navSeries,
+    benchmarkReturns,
   };
 }

@@ -549,6 +549,18 @@ const KLineChart: React.FC<KLineChartProps> = ({
             }
           }
 
+          // 独立副图显示至今涨跌幅
+          if (seriesType === 'line') {
+            const lastValidItem = [...filteredData].reverse().find(d => !isNaN(d.close) && d.close !== 0);
+            if (lastValidItem && item.close !== 0) {
+              const changeToToday = ((lastValidItem.close - item.close) / item.close * 100).toFixed(2);
+              const changeColor = parseFloat(changeToToday) >= 0 ? '#ff4d4d' : '#00b300';
+              tooltipHtml += `
+                <div>至今涨跌幅: <span style="color:${changeColor}">${changeToToday}%</span></div>
+              `;
+            }
+          }
+
           filteredExtraSeries.forEach((series, idx) => {
             const seriesDataMap = new Map<string, KLineData>();
             series.data.forEach(d => seriesDataMap.set(d.date, d));

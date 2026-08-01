@@ -29,6 +29,8 @@ export interface BacktestYearResult {
   start_nav: number;
   end_nav: number;
   annual_return: number;
+  bull_return?: number;
+  bear_return?: number;
 }
 
 export interface BacktestNavPoint {
@@ -479,7 +481,7 @@ function getMoneyflowInflow(
   let bestIndustry = '';
   for (const industry of industries) {
     const item = dateData.find((d) => d.industry_name === industry);
-    if (item && item.net_inflow !== undefined) {
+    if (item && item.net_inflow !== undefined && !isNaN(item.net_inflow)) {
       if (maxInflow === null || item.net_inflow > maxInflow) {
         maxInflow = item.net_inflow;
         bestIndustry = industry;
@@ -504,7 +506,7 @@ function getConceptInflow(
   let bestConcept = '';
   for (const item of dateData) {
     if (item.etf_name !== etfName) continue;
-    if (item.net_inflow !== undefined) {
+    if (item.net_inflow !== undefined && !isNaN(item.net_inflow)) {
       if (maxInflow === null || item.net_inflow > maxInflow) {
         maxInflow = item.net_inflow;
         bestConcept = item.industry_name;
@@ -703,26 +705,223 @@ export function runBacktest(
           .slice(0, weights.length);
       }
 
+      // 构建持仓：如果 topN 中的 ETF 缺少 start/end 价格数据，用候选池中的下一个补上
+      // 先把所有候选收集起来，过滤有完整价格数据的
+      const rankedCandidates = topN.map((item) => ({
+        item,
+      }));
+
+      // 补充候选：对于资金流向排名方式，如果 topN 中因缺少价格数据被跳过，从原候选池补
+      const backupCandidates: {
+        item: { name: string; day_change: number; industry_name?: string };
+      }[] = [];
+      if (rankingMethod !== 'etf_gain') {
+        const allCandidates = ((): {
+          name: string;
+          day_change: number;
+          industry_name?: string;
+        }[] => {
+          const dateKey = startDate.replace(/-/g, '');
+          if (rankingMethod === 'ths_moneyflow' && indMoneyflowMap.size > 0) {
+            const list: {
+              name: string;
+              day_change: number;
+              industry_name?: string;
+            }[] = [];
+            etfMap.forEach((_data, name) => {
+              if (name === BANK_ETF_NAME) return;
+              const r = getConceptInflow(name, dateKey, indMoneyflowMap);
+              if (r !== null)
+                list.push({
+                  name,
+                  day_change: r.inflow,
+                  industry_name: r.industryName,
+                });
+            });
+            return list.sort((a, b) => b.day_change - a.day_change);
+          } else if (
+            rankingMethod === 'dc_moneyflow' &&
+            moneyflowMap.size > 0
+          ) {
+            const list: {
+              name: string;
+              day_change: number;
+              industry_name?: string;
+            }[] = [];
+            etfMap.forEach((_data, name) => {
+              if (name === BANK_ETF_NAME) return;
+              const r = getMoneyflowInflow(name, dateKey, moneyflowMap);
+              if (r !== null)
+                list.push({
+                  name,
+                  day_change: r.inflow,
+                  industry_name: r.industryName,
+                });
+            });
+            return list.sort((a, b) => b.day_change - a.day_change);
+          } else if (
+            rankingMethod === 'ths_concept' &&
+            conceptMoneyflowMap.size > 0
+          ) {
+            const list: {
+              name: string;
+              day_change: number;
+              industry_name?: string;
+            }[] = [];
+            etfMap.forEach((_data, name) => {
+              if (name === BANK_ETF_NAME) return;
+              const r = getConceptInflow(name, dateKey, conceptMoneyflowMap);
+              if (r !== null)
+                list.push({
+                  name,
+                  day_change: r.inflow,
+                  industry_name: r.industryName,
+                });
+            });
+            return list.sort((a, b) => b.day_change - a.day_change);
+          }
+          return [];
+        })();
+        const topNames = new Set(topN.map((t) => t.name));
+        for (const c of allCandidates) {
+          if (topNames.has(c.name)) continue;
+          backupCandidates.push({ item: c });
+        }
+      }
+
       let totalReturn = 0;
       const holdings: BacktestHolding[] = [];
-      topN.forEach((item, idx) => {
-        const weightPct = weights[idx] ?? 0;
-        const weight = weightPct / 100;
-        const data = etfMap.get(item.name)!;
-        const startClose = getClose(data, startDate);
-        const endClose = getClose(data, endDate);
+
+      const getSectorClose = (
+        industryName: string,
+        date: string,
+        map: Map<string, MoneyflowData[]>,
+      ): number | null => {
+        const dateKey = date.replace(/-/g, '');
+        const list = map.get(dateKey);
+        if (!list) return null;
+        const item = list.find((d) => d.industry_name === industryName);
+        if (
+          !item ||
+          item.close === undefined ||
+          isNaN(item.close) ||
+          item.close === 0
+        )
+          return null;
+        return item.close;
+      };
+
+      const tryAddHolding = (
+        item: { name: string; day_change: number; industry_name?: string },
+        weightPct: number,
+      ) => {
+        let startClose: number | null = null;
+        let endClose: number | null = null;
+        let useSectorPrice = false;
+
+        const data = etfMap.get(item.name);
+        if (data) {
+          startClose = getClose(data, startDate);
+          endClose = getClose(data, endDate);
+        }
+
+        // 如果ETF数据缺失，尝试用板块指数收盘价
+        if (
+          (startClose === null || endClose === null || startClose === 0) &&
+          item.industry_name
+        ) {
+          let map: Map<string, MoneyflowData[]> | null = null;
+          if (rankingMethod === 'dc_moneyflow') map = moneyflowMap;
+          else if (rankingMethod === 'ths_concept') map = conceptMoneyflowMap;
+          else if (rankingMethod === 'ths_moneyflow') map = indMoneyflowMap;
+
+          if (map && map.size > 0) {
+            const sectorStart = getSectorClose(
+              item.industry_name,
+              startDate,
+              map,
+            );
+            const sectorEnd = getSectorClose(item.industry_name, endDate, map);
+            if (
+              sectorStart !== null &&
+              sectorEnd !== null &&
+              sectorStart !== 0
+            ) {
+              startClose = sectorStart;
+              endClose = sectorEnd;
+              useSectorPrice = true;
+            }
+          }
+        }
+
         if (startClose === null || endClose === null || startClose === 0)
-          return;
+          return false;
+
         const holdingReturn = endClose / startClose - 1;
+        const weight = weightPct / 100;
         totalReturn += weight * holdingReturn;
         holdings.push({
           name: item.name,
           weight,
           day_change: item.day_change,
           holding_return: holdingReturn,
-          industry_name: (item as any).industry_name,
+          industry_name: item.industry_name,
         });
-      });
+        return true;
+      };
+
+      // 先按排名顺序尝试，权重按实际持仓位置分配
+      for (const c of rankedCandidates) {
+        if (holdings.length >= weights.length) break;
+        const weightPct = weights[holdings.length] ?? 0;
+        tryAddHolding(c.item, weightPct);
+      }
+
+      // 如果持仓不够，从替补池补
+      if (holdings.length < weights.length && backupCandidates.length > 0) {
+        const prevDate = getPrevDate(filteredAMV, startDate);
+        for (const bc of backupCandidates) {
+          if (holdings.length >= weights.length) break;
+          const data = etfMap.get(bc.item.name);
+          if (!data) continue;
+          // 计算ETF启动日涨幅作为兜底 day_change
+          if (prevDate) {
+            const prevClose = getClose(data, prevDate);
+            const startClose = getClose(data, startDate);
+            if (prevClose !== null && startClose !== null && prevClose !== 0) {
+              bc.item.day_change = ((startClose - prevClose) / prevClose) * 100;
+            }
+          }
+          const weightPct = weights[holdings.length] ?? 0;
+          tryAddHolding(bc.item, weightPct);
+        }
+      }
+
+      // 如果还是不够，用 etf_gain 排名兜底
+      if (holdings.length < weights.length) {
+        const prevDate = getPrevDate(filteredAMV, startDate);
+        const fallbackGains: { name: string; day_change: number }[] = [];
+        etfMap.forEach((data, name) => {
+          if (name === BANK_ETF_NAME) return;
+          if (holdings.some((h) => h.name === name)) return;
+          const prevClose = prevDate ? getClose(data, prevDate) : null;
+          const startClose = getClose(data, startDate);
+          if (prevClose === null || startClose === null || prevClose === 0)
+            return;
+          fallbackGains.push({
+            name,
+            day_change: ((startClose - prevClose) / prevClose) * 100,
+          });
+        });
+        fallbackGains
+          .filter((g) => !isNaN(g.day_change))
+          .sort((a, b) => b.day_change - a.day_change)
+          .forEach((g) => {
+            if (holdings.length >= weights.length) return;
+            const weightPct = weights[holdings.length] ?? 0;
+            tryAddHolding(g, weightPct);
+          });
+      }
 
       const amvStartClose = getClose(filteredAMV, startDate);
       const amvEndClose = getClose(filteredAMV, endDate);
@@ -791,14 +990,36 @@ export function runBacktest(
   const yearResults: BacktestYearResult[] = [];
   let prevYearEndNav = 1;
 
+  // 计算每年多头/空头区间收益率
+  const bullYearNav = new Map<number, number>();
+  const bearYearNav = new Map<number, number>();
+  trades.forEach((t) => {
+    const y = t.year;
+    if (t.type === 'bull') {
+      bullYearNav.set(y, (bullYearNav.get(y) ?? 1) * (1 + t.return));
+    } else {
+      bearYearNav.set(y, (bearYearNav.get(y) ?? 1) * (1 + t.return));
+    }
+  });
+
   for (let y = startYear; y <= maxYear; y++) {
     const endNav = yearNav.has(y) ? yearNav.get(y)! : prevYearEndNav;
     const annualReturn = endNav / prevYearEndNav - 1;
+    const bullNav = bullYearNav.get(y);
+    const bearNav = bearYearNav.get(y);
     yearResults.push({
       year: y,
       start_nav: parseFloat(prevYearEndNav.toFixed(4)),
       end_nav: parseFloat(endNav.toFixed(4)),
       annual_return: parseFloat((annualReturn * 100).toFixed(2)),
+      bull_return:
+        bullNav !== undefined
+          ? parseFloat(((bullNav - 1) * 100).toFixed(2))
+          : undefined,
+      bear_return:
+        bearNav !== undefined
+          ? parseFloat(((bearNav - 1) * 100).toFixed(2))
+          : undefined,
     });
     prevYearEndNav = endNav;
   }

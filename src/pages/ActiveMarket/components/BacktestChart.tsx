@@ -332,31 +332,41 @@ const BacktestChart: React.FC<BacktestChartProps> = ({ result, year, amvData = [
                           marginLeft: -4,
                         }}
                       >
-                        {(rankingMethod === 'ths_moneyflow' || rankingMethod === 'ths_concept' || rankingMethod === 'dc_moneyflow') && h.industry_name
-                          ? h.industry_name
-                          : h.name.replace('ETF', '')}
-                        <span style={{ color: '#999' }}> {(h.weight * 100).toFixed(0)}%</span>
-                        {h.day_change !== undefined && (
-                          <>
-                            <span style={{ color: '#999', marginLeft: 8 }}>
-                              {rankingMethod === 'ths_moneyflow'
-                                ? '同花顺板块流入'
-                                : rankingMethod === 'ths_concept'
-                                  ? '同花顺概念流入'
-                                  : rankingMethod === 'dc_moneyflow'
-                                    ? '东财板块流入'
-                                    : '启动涨幅'}
-                            </span>
-                            <span style={{ color: h.day_change >= 0 ? '#c41e3a' : '#006400' }}>
-                              {rankingMethod === 'ths_moneyflow' || rankingMethod === 'ths_concept' || rankingMethod === 'dc_moneyflow'
-                                ? (h.day_change >= 0 ? '+' : '') + h.day_change.toFixed(2) + '亿'
-                                : (h.day_change >= 0 ? '+' : '') + h.day_change.toFixed(2) + '%'}
-                            </span>
-                            {(rankingMethod === 'ths_moneyflow' || rankingMethod === 'ths_concept' || rankingMethod === 'dc_moneyflow') && (
-                              <span style={{ color: '#666', marginLeft: 8 }}>{h.name.replace('ETF', '')}</span>
-                            )}
-                          </>
-                        )}
+                        {(() => {
+                          const useMoneyflow = !!(h.industry_name);
+                          const isThsConcept = useMoneyflow && rankingMethod === 'ths_concept';
+                          const isThsMoneyflow = useMoneyflow && rankingMethod === 'ths_moneyflow';
+                          const isDcMoneyflow = useMoneyflow && rankingMethod === 'dc_moneyflow';
+                          return (
+                            <>
+                              {useMoneyflow
+                                ? h.industry_name
+                                : h.name.replace('ETF', '')}
+                              <span style={{ color: '#999' }}> {(h.weight * 100).toFixed(0)}%</span>
+                              {h.day_change !== undefined && (
+                                <>
+                                  <span style={{ color: '#999', marginLeft: 8 }}>
+                                    {isThsMoneyflow
+                                      ? '同花顺板块流入'
+                                      : isThsConcept
+                                        ? '同花顺概念流入'
+                                        : isDcMoneyflow
+                                          ? '东财板块流入'
+                                          : '启动涨幅'}
+                                  </span>
+                                  <span style={{ color: h.day_change >= 0 ? '#c41e3a' : '#006400' }}>
+                                    {useMoneyflow
+                                      ? (h.day_change >= 0 ? '+' : '') + h.day_change.toFixed(2) + '亿'
+                                      : (h.day_change >= 0 ? '+' : '') + h.day_change.toFixed(2) + '%'}
+                                  </span>
+                                  {useMoneyflow && (
+                                    <span style={{ color: '#666', marginLeft: 8 }}>{h.name.replace('ETF', '')}</span>
+                                  )}
+                                </>
+                              )}
+                            </>
+                          );
+                        })()}
                         <span style={{ color: '#999', marginLeft: 8 }}>区间收益</span>
                         <span style={{ color: h.holding_return >= 0 ? '#c41e3a' : '#006400' }}>
                           {(h.holding_return >= 0 ? '+' : '') + (h.holding_return * 100).toFixed(2)}%

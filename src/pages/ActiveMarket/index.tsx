@@ -159,7 +159,10 @@ const ActiveMarket: React.FC = () => {
                 industry_name: row['industry_name'] || '',
                 pct_change: parseFloat(row['pct_change']) || 0,
                 close: parseFloat(row['close_price']) || parseFloat(row['close']) || 0,
-                net_inflow: parseFloat(row['net_inflow']) || 0,
+                net_inflow: (() => {
+                    const v = parseFloat(row['net_inflow']);
+                    return isNaN(v) ? NaN : v;
+                })(),
                 net_amount_rate: parseFloat(row['net_amount_rate']) || 0,
                 super_large_inflow: parseFloat(row['super_large_inflow']) || 0,
                 large_inflow: parseFloat(row['large_inflow']) || 0,
@@ -600,7 +603,7 @@ const ActiveMarket: React.FC = () => {
                                     ))}
                                 </div>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', fontSize: 13, color: '#666', marginTop: 4 }}>
-                                    <span style={{ fontWeight: 500 }}>总基准对比：</span>
+                                    <span style={{ fontWeight: 500 }}>基准对比：</span>
                                     {backtestResult.benchmarkReturns.map(b => (
                                         <span key={b.name} style={{ color: b.totalReturn >= 0 ? '#c41e3a' : '#006400' }}>
                                             {b.name}：{b.totalReturn >= 0 ? '+' : ''}{(b.totalReturn * 100).toFixed(2)}%
@@ -660,7 +663,7 @@ const ActiveMarket: React.FC = () => {
                 open={showBacktestModal}
                 onCancel={() => setShowBacktestModal(false)}
                 footer={null}
-                width={800}
+                width={760}
                 bodyStyle={{ padding: '28px 36px' }}
             >
                 {backtestResult && (
@@ -705,7 +708,7 @@ const ActiveMarket: React.FC = () => {
                             </tbody>
                         </table>
                         <div style={{ marginTop: 16, display: 'flex', gap: 24, flexWrap: 'wrap', fontSize: 14 }}>
-                            <div style={{ fontWeight: 500, color: '#666' }}>总基准对比（多头区间持有）：</div>
+                            <div style={{ fontWeight: 500, color: '#666' }}>基准对比（多头）：</div>
                             {backtestResult.benchmarkReturns.map(b => (
                                 <div key={b.name} style={{ color: b.totalReturn >= 0 ? '#c41e3a' : '#006400' }}>
                                     {b.name}：{b.totalReturn >= 0 ? '+' : ''}{(b.totalReturn * 100).toFixed(2)}%
@@ -729,6 +732,9 @@ const ActiveMarket: React.FC = () => {
                             {selectedYear}年 收益率曲线
                             <span style={{ marginLeft: 16, fontSize: 15, color, fontWeight: 500 }}>
                                 策略：{yearResult.annual_return >= 0 ? '+' : ''}{yearResult.annual_return.toFixed(2)}%
+                                <span style={{ marginLeft: 8, fontSize: 13, color: '#c41e3a', fontWeight: 400 }}>
+                                    (多头{yearResult.bull_return !== undefined ? `${yearResult.bull_return >= 0 ? '+' : ''}${yearResult.bull_return.toFixed(2)}%` : '—'}，空头{yearResult.bear_return !== undefined ? `${yearResult.bear_return >= 0 ? '+' : ''}${yearResult.bear_return.toFixed(2)}%` : '—'})
+                                </span>
                             </span>
                             {backtestResult?.benchmarkReturns.map(b => {
                                 const ba = b.annualReturns.find(a => a.year === selectedYear);

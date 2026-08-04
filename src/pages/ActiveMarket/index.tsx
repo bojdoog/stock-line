@@ -86,24 +86,14 @@ const ActiveMarket: React.FC = () => {
     }, []);
 
     useEffect(() => {
-        fetch('/data/0AMV-2013-2026.csv')
-            .then(res => res.text())
-            .then(text => {
-                const lines = text.trim().split('\n');
-                const parsedData = lines.slice(1).map(line => {
-                    const values = line.split(',');
-                    return {
-                        date: values[0],
-                        open: parseFloat(values[1]),
-                        high: parseFloat(values[2]),
-                        low: parseFloat(values[3]),
-                        close: parseFloat(values[4]),
-                        volume: parseFloat(values[5]),
-                        amount: parseFloat(values[6])
-                    };
-                }).filter(item => !isNaN(item.open) && !isNaN(item.close));
-
-                setData(parsedData);
+        fetch('/api/amv')
+            .then(res => res.json())
+            .then(json => {
+                if (json.code === 0) {
+                    setData(json.data);
+                } else {
+                    console.error('加载活跃市值失败:', json.message);
+                }
                 setLoading(false);
             })
             .catch(err => {
@@ -112,102 +102,40 @@ const ActiveMarket: React.FC = () => {
             });
     }, []);
 
-    // 加载所有板块 ETF 数据，用于计算区间排名
+    // 加载所有板块 ETF + Index 数据（通过后端 API，27+2 → 1 个请求）
     useEffect(() => {
-        const loadPromises = ETF_OPTIONS.map(option =>
-            fetch(`/data/${option.file}`)
-                .then(res => res.text())
-                .then(text => {
-                    const lines = text.trim().split('\n');
-                    const parsedData = lines.slice(1).map(line => {
-                        const values = line.split(',');
-                        return {
-                            date: values[0],
-                            open: parseFloat(values[1]),
-                            close: parseFloat(values[2]),
-                            high: parseFloat(values[3]),
-                            low: parseFloat(values[4]),
-                            volume: parseFloat(values[5]),
-                            amount: 0
-                        };
-                    }).filter(item => !isNaN(item.open) && !isNaN(item.close));
-                    return { name: option.label, id: option.value, data: parsedData };
-                })
-                .catch(() => null)
-        );
-
-        Promise.all(loadPromises)
-            .then(results => setAllETFSeries(results.filter(Boolean) as ExtraSeries[]));
+        fetch('/api/sector-data')
+            .then(res => res.json())
+            .then(json => {
+                if (json.code === 0) {
+                    const { etf_data, index_data } = json.data;
+                    const allSeries: ExtraSeries[] = [
+                        ...(etf_data || []),
+                        ...(index_data || []),
+                    ];
+                    setAllETFSeries(allSeries);
+                }
+            })
+            .catch(err => console.error('加载板块数据失败:', err));
     }, []);
 
     useEffect(() => {
         setExtraSeries(allETFSeries.filter(s => selectedETFs.includes(s.id)));
     }, [selectedETFs, allETFSeries]);
 
-    // 加载资金流向数据（东财行业 + 同花顺概念）
-    const parseMoneyflowCSV = (text: string): MoneyflowData[] => {
-        const lines = text.trim().split('\n');
-        const headers = lines[0].split(',').map(h => h.trim().replace(/\r/g, ''));
-        return lines.slice(1).map(line => {
-            const values = line.split(',');
-            const row: Record<string, string> = {};
-            headers.forEach((h, i) => {
-                row[h.trim()] = values[i]?.trim() || '';
-            });
-            return {
-                date: row['date'] || '',
-                industry_name: row['industry_name'] || '',
-                pct_change: parseFloat(row['pct_change']) || 0,
-                close: parseFloat(row['close_price']) || parseFloat(row['close']) || 0,
-                net_inflow: (() => {
-                    const v = parseFloat(row['net_inflow']);
-                    return isNaN(v) ? NaN : v;
-                })(),
-                net_amount_rate: parseFloat(row['net_amount_rate']) || 0,
-                super_large_inflow: parseFloat(row['super_large_inflow']) || 0,
-                large_inflow: parseFloat(row['large_inflow']) || 0,
-                rank: parseInt(row['rank']) || 0,
-                etf_code: row['etf_code'] || '',
-                etf_name: row['etf_name'] || '',
-            } as MoneyflowData;
-        });
-    };
-
-    const loadMoneyflowDir = async (dir: string): Promise<MoneyflowData[]> => {
-        const response = await fetch(`/data/${dir}/index.json`);
-        if (!response.ok) return [];
-        const fileList: string[] = await response.json();
-
-        const allData: MoneyflowData[] = [];
-        for (const file of fileList) {
-            try {
-                const res = await fetch(`/data/${dir}/${file}`);
-                if (!res.ok) continue;
-                const text = await res.text();
-                allData.push(...parseMoneyflowCSV(text));
-            } catch (e) {
-                // 忽略单个文件加载错误
-            }
-        }
-        return allData;
-    };
-
+    // 加载资金流向数据（通过后端 API，1615 → 1 个请求）
     useEffect(() => {
-        const loadAll = async () => {
-            try {
-                const [dcData, thsData, indThsData] = await Promise.all([
-                    loadMoneyflowDir('moneyflow_ind_dc'),
-                    loadMoneyflowDir('moneyflow_cnt_ths'),
-                    loadMoneyflowDir('moneyflow_ind_ths'),
-                ]);
-                setMoneyflowData(dcData);
-                setConceptMoneyflowData(thsData);
-                setIndMoneyflowData(indThsData);
-            } catch (e) {
-                console.error('加载资金流向数据失败:', e);
-            }
-        };
-        loadAll();
+        fetch('/api/moneyflow/batch?types=ind_dc,cnt_ths,ind_ths')
+            .then(res => res.json())
+            .then(json => {
+                if (json.code === 0) {
+                    const { ind_dc, cnt_ths, ind_ths } = json.data;
+                    setMoneyflowData(ind_dc || []);
+                    setConceptMoneyflowData(cnt_ths || []);
+                    setIndMoneyflowData(ind_ths || []);
+                }
+            })
+            .catch(err => console.error('加载资金流向数据失败:', err));
     }, []);
 
     // 数据加载完成后运行多空区间策略回测
@@ -219,7 +147,28 @@ const ActiveMarket: React.FC = () => {
     }, [data, allETFSeries, strategyParams, moneyflowData, conceptMoneyflowData, indMoneyflowData]);
 
     if (loading) {
-        return <div style={{ padding: 20, color: '#333' }}>加载中...</div>;
+        return (
+            <div style={{
+                display: 'flex',
+                flexDirection: 'column',
+                justifyContent: 'center',
+                alignItems: 'center',
+                height: '100vh',
+                backgroundColor: '#f5f5f5',
+                gap: 20,
+            }}>
+                <div style={{
+                    width: 48,
+                    height: 48,
+                    border: '4px solid #e0e0e0',
+                    borderTop: '4px solid #1890ff',
+                    borderRadius: '50%',
+                    animation: 'spin 1s linear infinite',
+                }} />
+                <div style={{ color: '#666', fontSize: 14 }}>数据加载中，请稍候...</div>
+                <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+            </div>
+        );
     }
 
     const activeMarketLastDate = data.length > 0 ? data[data.length - 1].date : undefined;
@@ -405,7 +354,7 @@ const ActiveMarket: React.FC = () => {
                             %
                         </label>
                         <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#666' }}>
-                            单日跌幅小于
+                            单日跌幅大于
                             <input
                                 type="number"
                                 step={0.1}

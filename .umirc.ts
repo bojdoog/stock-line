@@ -14,4 +14,10 @@ export default defineConfig({
   npmClient: 'npm',
   history: { type: 'hash' },
   utoopack: {},
+  proxy: {
+    '/api/': {
+      target: 'http://localhost:5000',
+      changeOrigin: true,
+    },
+  },
 });
